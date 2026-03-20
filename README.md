@@ -1,150 +1,138 @@
-# Zcash Payment Links (ZIP-324)
+# Zcash Payment Links
 
 Send ZEC to anyone via shareable URLs. No address exchange needed — just send a link.
 
-Built on [ZIP-324: URI-Encapsulated Payments](https://zips.z.cash/zip-0324).
+Built on [ZIP-324: URI-Encapsulated Payments](https://zips.z.cash/zip-0324), with full in-browser claiming powered by [WebZjs](https://github.com/ChainSafe/WebZjs).
 
 ## How It Works
 
 ```
-Alice                          Bob
-  |                              |
-  |  1. Create payment link      |
-  |  2. Fund ephemeral address   |
-  |                              |
-  |  --- sends link via SMS ---> |
-  |                              |
-  |       3. Click link          |
-  |       4. See payment details |
-  |       5. Open in Zodl        |
-  |       6. Finalize payment    |
-  |                              |
+Alice (Sender)                            Bob (Recipient)
+  │                                         │
+  │  1. Create payment link                 │
+  │  2. Fund ephemeral wallet via Zodl      │
+  │                                         │
+  │  ─── sends link via Signal/SMS/etc ──>  │
+  │                                         │
+  │              3. Click link              │
+  │              4. Wallet syncs in-browser  │
+  │              5. Enter Zodl address       │
+  │              6. Funds swept to address   │
+  │                                         │
 ```
 
-1. **Sender** enters an amount and optional description
-2. App generates an ephemeral 256-bit key, encodes it in Bech32, and builds a ZIP-324 URI
-3. Sender shares the link via any messaging app (Signal, WhatsApp, SMS, etc.)
-4. **Recipient** clicks the link and sees the payment details
-5. Recipient taps "Open in Zodl" to finalize the payment into their wallet
+1. **Sender** enters an amount and description
+2. App generates a BIP-39 seed phrase and encodes it in the payment link
+3. Sender funds the ephemeral wallet (using Zodl or any Zcash wallet)
+4. Sender shares the link via any messaging app
+5. **Recipient** clicks the link — the browser loads a Zcash WASM wallet
+6. Recipient enters their Zodl address, and funds are swept directly to them
 
-The private key is encoded in the URL **fragment** (after `#`) and is never sent to any server.
+Everything happens client-side. The seed phrase is never sent to any server.
 
-## ZIP-324 URI Format
+## Architecture
+
+The claim page loads [ChainSafe WebZjs](https://github.com/ChainSafe/WebZjs), a full Zcash wallet compiled to WebAssembly. It connects to a lightwalletd proxy to sync the blockchain, finds the funded notes, creates a shielded transaction (with zk-SNARK proof generation), and broadcasts it — all in the browser.
+
+### Payment Link Format
 
 ```
-https://pay.withzcash.com:65536/payment/v1#amount=0.1&desc=Welcome&key=zkey1...
+https://example.com/claim?gift=eyJzZWVkIjoiLi4uIiwiYmly...
 ```
 
-| Component | Value | Purpose |
-|-----------|-------|---------|
-| Scheme | `https` | Enables Universal Links / App Links |
-| Host | `pay.withzcash.com` | Applink domain for wallet whitelisting |
-| Port | `65536` | Intentionally invalid — prevents network requests |
-| Path | `/payment/v1` | Version identifier |
-| Fragment | `amount`, `desc`, `key` | Payment params (never sent to server) |
+The `gift` parameter is a base64-encoded JSON payload:
 
-For testnet, substitute `pay.testzcash.com` and `TAZ` for `ZEC`.
+```json
+{
+  "seed": "24-word BIP-39 mnemonic",
+  "birthday": 3277800,
+  "amount": "0.1",
+  "desc": "Welcome to Zodl!"
+}
+```
+
+### Claim Flow (In-Browser)
+
+1. Decode seed + birthday from URL
+2. Initialize WebZjs WASM (~60 MB, cached after first load)
+3. Create wallet from seed, sync from birthday block
+4. Display spendable balance
+5. User enters recipient address
+6. `propose_transfer` → `create_proposed_transactions` → `send_authorized_transactions`
 
 ## Project Structure
 
 ```
 src/
 ├── lib/
+│   ├── gift.ts         # Gift payload encoding/decoding
+│   ├── wallet.ts       # WebZjs WASM loader and wallet helpers
 │   ├── types.ts        # Network, PaymentParams types
-│   ├── keys.ts         # Ephemeral key generation, Bech32 encoding
-│   └── zip324.ts       # ZIP-324 URI building and parsing
-└── app/
-    ├── layout.tsx       # App shell with header
-    ├── page.tsx         # Create payment link form
-    ├── globals.css      # Zcash-themed dark UI
-    └── claim/
-        └── page.tsx     # Claim page (client-side only)
+│   ├── keys.ts         # Ephemeral key generation (Bech32)
+│   └── zip324.ts       # ZIP-324 canonical URI building/parsing
+├── app/
+│   ├── layout.tsx      # App shell
+│   ├── page.tsx        # Create payment link
+│   ├── globals.css     # Zcash-themed dark UI
+│   └── claim/
+│       └── page.tsx    # Claim page (WebZjs in-browser sweep)
+public/
+└── wasm/
+    ├── wallet/         # WebZjs wallet WASM (~60 MB)
+    └── keys/           # WebZjs keys WASM (~2 MB)
 ```
 
-## Core Library
+## Setup
 
-### `zip324.ts`
+### Prerequisites
 
-```typescript
-import { buildFragment, buildCanonicalURI, parseFragment, parseCanonicalURI } from "@/lib/zip324";
+- Node.js 18+
+- Rust nightly (for building WebZjs WASM)
+- [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/)
 
-// Build a ZIP-324 URI
-const uri = buildCanonicalURI({ amount: "0.1", key: "zkey1...", desc: "Welcome" });
+### Build WebZjs WASM
 
-// Parse a fragment from a claim URL
-const params = parseFragment("amount=0.1&key=zkey1...&desc=Welcome");
+```bash
+./scripts/build-wasm.sh
 ```
 
-### `keys.ts`
+This clones WebZjs, builds the WASM packages, and copies them to `public/wasm/`.
 
-```typescript
-import { generateEphemeralKey, encodeKey, decodeKey } from "@/lib/keys";
-
-const key = generateEphemeralKey();   // 256-bit random Uint8Array
-const encoded = encodeKey(key);       // Bech32: "zkey1..."
-const decoded = decodeKey(encoded);   // Back to Uint8Array
-```
-
-## Zodl Integration
-
-The claim page constructs a canonical ZIP-324 URI for the "Open in Zodl" button. On iOS/macOS with Zodl installed, clicking triggers [Universal Links](https://developer.apple.com/documentation/uikit/inter-process_communication/allowing_apps_and_websites_to_link_to_your_content) to open Zodl directly.
-
-For Zodl to handle these links, it would need:
-1. Register `pay.withzcash.com` in its Associated Domains entitlement
-2. Handle the URI fragment to extract payment params
-3. Use the embedded key to locate and spend the ephemeral note
-
-## Running Locally
+### Install & Run
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to create payment links, or visit a claim URL like:
+Open [http://localhost:3000](http://localhost:3000).
 
-```
-http://localhost:3000/claim#amount=0.1&desc=Welcome+to+Zodl!&key=zkey1...
-```
+## End-to-End Flow with Zodl
 
-## Testnet
+1. **Create**: Go to the app, enter amount + description, click "Generate Payment Link"
+2. **Fund**: Copy the seed phrase, import it into a Zcash wallet to get the address, send ZEC to it from Zodl
+3. **Share**: Copy the payment link and send it via any messaging app
+4. **Claim**: Recipient opens the link, enters their Zodl address, clicks "Claim Funds"
+5. **Done**: Funds are swept to the recipient's Zodl wallet via an in-browser shielded transaction
 
-Toggle "Testnet mode" on the create page to generate testnet payment links. Testnet links use `pay.testzcash.com` in the canonical URI and display TAZ instead of ZEC.
+## ZIP-324 Compliance
 
-To test with real testnet funds:
+This implementation follows ZIP-324's core concepts:
+- Ephemeral wallet keys encoded in shareable URIs
+- Funds are swept ("finalized") to the recipient's address
+- Key material stays client-side (never sent to a server)
+- On-chain footprint is indistinguishable from normal shielded transactions
 
-```bash
-# Fund the ephemeral address derived from the payment key
-zcash-cli -testnet z_sendmany "FROM_ADDRESS" '[{"address": "EPHEMERAL_ADDRESS", "amount": 0.10001}]'
-
-# Verify the note exists
-zcash-cli -testnet z_listunspent
-
-# Sweep funds to recipient (finalization)
-zcash-cli -testnet z_sendmany "EPHEMERAL_ADDRESS" '[{"address": "RECIPIENT_ADDRESS", "amount": 0.1}]'
-```
-
-Get testnet TAZ from the [Zecpages faucet](https://faucet.zecpages.com/).
-
-## Full Lifecycle (ZIP-324)
-
-| Stage | Description |
-|-------|-------------|
-| **Generate** | Create ephemeral key, fund address, build URI |
-| **Transmit** | Share URI via secure messaging channel |
-| **Render** | Recipient sees payment amount and description |
-| **Verify** | Wallet checks note exists and is unspent on-chain |
-| **Finalize** | Recipient sweeps funds to their own address |
-| **Cancel** | Sender can reclaim unfinalized funds |
+The canonical ZIP-324 URI library (`src/lib/zip324.ts`) is also included for reference.
 
 ## Tech Stack
 
 - [Next.js 16](https://nextjs.org/) (App Router, Turbopack)
 - TypeScript
 - [Tailwind CSS](https://tailwindcss.com/)
-- [bech32](https://www.npmjs.com/package/bech32) for key encoding
-- [@noble/hashes](https://www.npmjs.com/package/@noble/hashes) for BLAKE2b (ZIP-32 key derivation)
+- [WebZjs](https://github.com/ChainSafe/WebZjs) (Zcash WASM wallet)
+- [@scure/bip39](https://github.com/paulmillr/scure-bip39) for seed generation
 
 ## License
 
-MIT — matching [ZIP-324](https://zips.z.cash/zip-0324).
+MIT

@@ -1,57 +1,50 @@
 "use client";
 
 import { useState } from "react";
-import { generateEphemeralKey, encodeKey } from "@/lib/keys";
-import { buildFragment, buildCanonicalURI } from "@/lib/zip324";
-import type { Network } from "@/lib/types";
-
-interface Result {
-  webUrl: string;
-  canonicalUri: string;
-  message: string;
-  amount: string;
-  desc?: string;
-}
+import { generateMnemonic } from "@scure/bip39";
+import { wordlist } from "@scure/bip39/wordlists/english.js";
+import { buildGiftUrl, type GiftPayload } from "@/lib/gift";
 
 const INPUT =
   "w-full bg-surface border border-border rounded-xl px-4 py-3 text-foreground placeholder:text-muted/50 focus:outline-none focus:ring-2 focus:ring-accent/40 transition-shadow";
 
+const CURRENT_HEIGHT = 3_277_800;
+
 export default function Home() {
   const [amount, setAmount] = useState("");
   const [desc, setDesc] = useState("");
-  const [network, setNetwork] = useState<Network>("mainnet");
-  const [result, setResult] = useState<Result | null>(null);
+  const [result, setResult] = useState<{
+    giftUrl: string;
+    message: string;
+    seed: string;
+    payload: GiftPayload;
+  } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
-  const testnet = network === "testnet";
-  const coin = testnet ? "TAZ" : "ZEC";
   const valid = /^\d+(\.\d{1,8})?$/.test(amount) && parseFloat(amount) > 0;
 
   function create() {
-    const key = encodeKey(generateEphemeralKey());
-    const params = { amount, key, desc: desc || undefined };
-    const fragment = buildFragment(params) + (testnet ? "&net=test" : "");
-    const webUrl = `${window.location.origin}/claim#${fragment}`;
-    const canonicalUri = buildCanonicalURI(params, network);
+    const seed = generateMnemonic(wordlist, 256);
+    const payload: GiftPayload = {
+      seed,
+      birthday: CURRENT_HEIGHT,
+      amount: amount || undefined,
+      desc: desc || undefined,
+    };
+    const giftUrl = buildGiftUrl(window.location.origin, payload);
     const message = [
-      `You received ${amount} ${coin}${desc ? ` — ${desc}` : ""}!`,
-      `Claim it here: ${webUrl}`,
+      `You received ${amount} ZEC${desc ? ` — ${desc}` : ""}!`,
+      `Claim it here: ${giftUrl}`,
       "",
       "Don't have a wallet? Get Zodl: https://zodl.com",
     ].join("\n");
-    setResult({ webUrl, canonicalUri, message, amount, desc: desc || undefined });
+    setResult({ giftUrl, message, seed, payload });
   }
 
   async function copy(text: string, label: string) {
     await navigator.clipboard.writeText(text);
     setCopied(label);
     setTimeout(() => setCopied(null), 2000);
-  }
-
-  function reset() {
-    setResult(null);
-    setAmount("");
-    setDesc("");
   }
 
   return (
@@ -94,19 +87,6 @@ export default function Home() {
                 className={INPUT}
               />
             </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={testnet}
-                onChange={(e) =>
-                  setNetwork(e.target.checked ? "testnet" : "mainnet")
-                }
-                className="accent-accent"
-              />
-              <span className="text-muted">
-                Testnet mode{testnet && " (TAZ)"}
-              </span>
-            </label>
             <button
               type="submit"
               disabled={!valid}
@@ -120,21 +100,42 @@ export default function Home() {
             <div className="bg-surface border border-border rounded-xl p-5">
               <p className="text-sm text-muted mb-1">Payment amount</p>
               <p className="text-3xl font-bold">
-                {result.amount} <span className="text-accent">{coin}</span>
+                {amount} <span className="text-accent">ZEC</span>
               </p>
-              {result.desc && <p className="text-muted mt-1">{result.desc}</p>}
+              {desc && <p className="text-muted mt-1">{desc}</p>}
             </div>
 
             <div className="bg-surface border border-border rounded-xl p-4">
-              <p className="text-sm text-muted mb-2">Shareable link</p>
+              <p className="text-sm font-medium text-foreground/80 mb-2">
+                Step 1: Fund the payment wallet
+              </p>
+              <p className="text-sm text-muted mb-3">
+                Open Zodl and send {amount} ZEC to the wallet derived from this
+                seed phrase. The recipient will use this link to claim the funds.
+              </p>
+              <div className="bg-background rounded-lg p-3 font-mono text-xs leading-relaxed break-all text-accent/80 select-all">
+                {result.seed}
+              </div>
+              <button
+                onClick={() => copy(result.seed, "seed")}
+                className="mt-2 text-xs text-muted hover:text-foreground transition-colors"
+              >
+                {copied === "seed" ? "Copied!" : "Copy seed phrase"}
+              </button>
+            </div>
+
+            <div className="bg-surface border border-border rounded-xl p-4">
+              <p className="text-sm font-medium text-foreground/80 mb-2">
+                Step 2: Share the payment link
+              </p>
               <p className="font-mono text-xs break-all text-foreground/70 leading-relaxed">
-                {result.webUrl}
+                {result.giftUrl}
               </p>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <button
-                onClick={() => copy(result.webUrl, "link")}
+                onClick={() => copy(result.giftUrl, "link")}
                 className="bg-accent text-black font-semibold rounded-xl px-4 py-3 hover:bg-accent-hover transition-colors"
               >
                 {copied === "link" ? "Copied!" : "Copy Link"}
@@ -147,17 +148,12 @@ export default function Home() {
               </button>
             </div>
 
-            <details className="text-xs text-muted">
-              <summary className="cursor-pointer hover:text-foreground transition-colors">
-                ZIP-324 canonical URI
-              </summary>
-              <p className="font-mono mt-2 break-all leading-relaxed bg-background rounded-lg p-3 border border-border">
-                {result.canonicalUri}
-              </p>
-            </details>
-
             <button
-              onClick={reset}
+              onClick={() => {
+                setResult(null);
+                setAmount("");
+                setDesc("");
+              }}
               className="w-full text-sm text-muted hover:text-foreground transition-colors py-2"
             >
               Create another payment link

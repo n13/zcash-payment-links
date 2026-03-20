@@ -9,8 +9,10 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@chainsafe/webzjs-keys": "file:vendor/webzjs-keys",
+    "@chainsafe/webzjs-wallet": "file:vendor/webzjs-wallet",
     "@noble/hashes": "^2.0.1",
-    "bech32": "^2.0.0",
+    "@scure/bip39": "^2.0.1",
     "next": "16.2.0",
     "react": "19.2.4",
     "react-dom": "19.2.4"

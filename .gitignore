@@ -42,3 +42,7 @@ next-env.d.ts
 
 AGENTS.md
 CLAUDE.md
+
+# WebZjs WASM binaries (built from source via scripts/build-wasm.sh)
+/public/wasm/
+/vendor/
